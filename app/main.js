@@ -89,23 +89,26 @@ function registerShortcutProtocolClient() {
   return app.setAsDefaultProtocolClient(SHORTCUT_PROTOCOL);
 }
 
-// Backend executable path - always use bundled stenoai
+// Backend executable path
 function getBackendPath() {
   if (app.isPackaged) {
-    // Production: bundled in app resources
     return path.join(process.resourcesPath, 'stenoai', 'stenoai');
-  } else {
-    // Development: use local build
-    return path.join(__dirname, '..', 'dist', 'stenoai', 'stenoai');
   }
+  // Dev mode: run Python directly
+  return process.platform === 'win32' ? 'python' : 'python3';
 }
 
 function getBackendCwd() {
   if (app.isPackaged) {
     return path.join(process.resourcesPath, 'stenoai');
-  } else {
-    return path.join(__dirname, '..', 'dist', 'stenoai');
   }
+  return path.join(__dirname, '..');
+}
+
+// In dev mode, prepend the script path to args so Python runs simple_recorder.py
+function devArgs(args) {
+  if (app.isPackaged) return args;
+  return [path.join(__dirname, '..', 'simple_recorder.py'), ...args];
 }
 
 function parseShortcutUrl(incomingUrl) {
@@ -343,7 +346,7 @@ function durationBucket(seconds) {
 async function initTelemetry() {
   try {
     const result = await new Promise((resolve, reject) => {
-      const proc = spawn(getBackendPath(), ['get-telemetry'], {
+      const proc = spawn(getBackendPath(), devArgs(['get-telemetry']), {
         cwd: getBackendCwd()
       });
       let stdout = '';
@@ -799,7 +802,7 @@ if (!gotSingleInstanceLock) {
     if (process.platform === 'darwin' && app.dock) {
       try {
         const dockResult = await new Promise((resolve, reject) => {
-          const proc = spawn(getBackendPath(), ['get-dock-icon'], {
+          const proc = spawn(getBackendPath(), devArgs(['get-dock-icon']), {
             cwd: getBackendCwd()
           });
           let stdout = '';
@@ -974,9 +977,9 @@ function runPythonScript(script, args = [], silent = false, extraEnv = {}) {
       sendDebugLog(`$ stenoai ${args.join(' ')}`);
     }
 
-    const process = spawn(backendPath, args, {
+    const process = spawn(backendPath, devArgs(args), {
       cwd: getBackendCwd(),
-      env: Object.keys(extraEnv).length > 0 ? { ...require('process').env, ...extraEnv } : undefined
+      env: { ...require('process').env, ...extraEnv }
     });
 
     let stdout = '';
@@ -1164,7 +1167,7 @@ ipcMain.handle('reprocess-meeting', async (event, summaryFile, regenerateTitle, 
     const reprocessEnv = cloudKey ? { ...require('process').env, STENOAI_CLOUD_API_KEY: cloudKey } : undefined;
 
     await new Promise((resolve, reject) => {
-      const proc = spawn(getBackendPath(), args, {
+      const proc = spawn(getBackendPath(), devArgs(args), {
         cwd: getBackendCwd(),
         env: reprocessEnv
       });
@@ -1478,7 +1481,7 @@ async function processNextInQueue() {
     }
 
     await new Promise((resolve, reject) => {
-      const proc = spawn(getBackendPath(), processArgs, {
+      const proc = spawn(getBackendPath(), devArgs(processArgs), {
         cwd: getBackendCwd(),
         env: queueEnv
       });
@@ -1603,7 +1606,7 @@ ipcMain.handle('start-recording-ui', async (_, sessionName) => {
     const cloudKey = loadCloudApiKey();
     if (cloudKey) recordEnv.STENOAI_CLOUD_API_KEY = cloudKey;
 
-    currentRecordingProcess = spawn(getBackendPath(), ['record', '7200', actualSessionName], {
+    currentRecordingProcess = spawn(getBackendPath(), devArgs(['record', '7200', actualSessionName]), {
       cwd: getBackendCwd(),
       env: Object.keys(recordEnv).length > 0 ? { ...require('process').env, ...recordEnv } : undefined
     });
@@ -3180,7 +3183,7 @@ ipcMain.handle('pull-model', async (event, modelName) => {
     sendDebugLog('This may take several minutes...');
 
     return new Promise((resolve) => {
-      const proc = spawn(getBackendPath(), ['pull-model', modelName], {
+      const proc = spawn(getBackendPath(), devArgs(['pull-model', modelName]), {
         cwd: getBackendCwd()
       });
 
