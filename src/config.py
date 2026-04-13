@@ -6,6 +6,8 @@ Handles storing and loading user preferences like model selection.
 
 import json
 import logging
+import os
+import sys
 import uuid
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -137,7 +139,13 @@ class Config:
         """
         if config_path is None:
             # Use same directory logic as recorder state
-            if "StenoAI.app" in str(Path(__file__)) or "Applications" in str(Path(__file__)):
+            if sys.platform == 'win32':
+                if getattr(sys, 'frozen', False):
+                    # Production on Windows: %APPDATA%\stenoai
+                    base_dir = Path(os.environ.get('APPDATA', Path.home())) / 'stenoai'
+                else:
+                    base_dir = Path(__file__).parent.parent
+            elif "StenoAI.app" in str(Path(__file__)) or "Applications" in str(Path(__file__)):
                 # Production: ~/Library/Application Support/stenoai
                 base_dir = Path.home() / "Library" / "Application Support" / "stenoai"
             else:
@@ -473,6 +481,11 @@ def get_data_dirs() -> Dict[str, Path]:
 
     if custom:
         base = Path(custom)
+    elif sys.platform == 'win32':
+        if getattr(sys, 'frozen', False):
+            base = Path(os.environ.get('APPDATA', Path.home())) / 'stenoai'
+        else:
+            base = Path(__file__).parent.parent
     elif "StenoAI.app" in str(Path(__file__)) or "Applications" in str(Path(__file__)):
         base = Path.home() / "Library" / "Application Support" / "stenoai"
     else:

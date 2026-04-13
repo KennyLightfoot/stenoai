@@ -2443,6 +2443,14 @@ def pull_model(model_name):
         print(json.dumps({"success": False, "error": str(e)}))
 
 
+@cli.command('meeting-monitor')
+@click.option('--interval', default=5.0, help='Poll interval in seconds')
+def meeting_monitor(interval):
+    """Watch for active meeting apps and emit MEETING_START/MEETING_END to stdout."""
+    from src.meeting_detector import monitor
+    monitor(poll_interval=interval)
+
+
 if __name__ == '__main__':
     import multiprocessing
     multiprocessing.freeze_support()

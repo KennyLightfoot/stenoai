@@ -12,10 +12,18 @@ const os = require('os');
 const { URL, URLSearchParams } = require('url');
 const crypto = require('crypto');
 const { PostHog } = require('posthog-node');
-const { initMain } = require('electron-audio-loopback');
 
-// Initialize electron-audio-loopback before app is ready
-initMain();
+// electron-audio-loopback is macOS-only; skip on Windows/Linux
+let initMain;
+try {
+  if (process.platform === 'darwin') {
+    const audioLoopback = require('electron-audio-loopback');
+    initMain = audioLoopback.initMain;
+  }
+} catch (e) {
+  console.warn('electron-audio-loopback not available:', e.message);
+}
+if (initMain) initMain();
 
 let mainWindow;
 let pythonProcess;
@@ -25,6 +33,10 @@ let shortcutQueue = [];
 let pendingShortcutUrls = [];
 let rendererShortcutReady = false;
 let launchedByShortcut = false;
+
+// Meeting auto-detect state
+let meetingDetectorProcess = null;
+let autoDetectEnabled = false;
 
 const SHORTCUT_PROTOCOL = 'stenoai';
 const SHORTCUT_HOST = 'record';
@@ -474,9 +486,9 @@ function createWindow() {
     mainWindow.show();
   });
 
-  // On macOS, hide to tray instead of destroying (like Slack, Spotify)
+  // Hide to tray instead of quitting on macOS and Windows
   mainWindow.on('close', (event) => {
-    if (process.platform === 'darwin' && !isQuitting) {
+    if ((process.platform === 'darwin' || process.platform === 'win32') && !isQuitting) {
       event.preventDefault();
       mainWindow.hide();
     }
@@ -544,6 +556,10 @@ function updateTrayMenu() {
       }
     },
     {
+      label: autoDetectEnabled ? '● Auto-detect: ON' : '○ Auto-detect: OFF',
+      click: toggleAutoDetect
+    },
+    {
       label: 'Settings',
       click: () => {
         showAndFocusWindow();
@@ -578,6 +594,79 @@ function updateTrayMenu() {
   ]);
 
   tray.setContextMenu(contextMenu);
+}
+
+// ---------------------------------------------------------------------------
+// Meeting auto-detect
+// ---------------------------------------------------------------------------
+
+function startMeetingDetector() {
+  if (meetingDetectorProcess) return; // already running
+
+  let cmd, args, cwd;
+  if (app.isPackaged) {
+    cmd = getBackendPath();
+    args = ['meeting-monitor'];
+    cwd = getBackendCwd();
+  } else {
+    // Dev mode: run Python directly against simple_recorder.py
+    cmd = process.platform === 'win32' ? 'python' : 'python3';
+    args = [path.join(__dirname, '..', 'simple_recorder.py'), 'meeting-monitor'];
+    cwd = path.join(__dirname, '..');
+  }
+
+  meetingDetectorProcess = spawn(cmd, args, {
+    cwd,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+
+  meetingDetectorProcess.stdout.on('data', (data) => {
+    const lines = data.toString().trim().split('\n');
+    for (const line of lines) {
+      if (line.startsWith('MEETING_START:')) {
+        const appName = line.slice('MEETING_START:'.length);
+        console.log(`[AutoDetect] Meeting started: ${appName}`);
+        if (mainWindow) mainWindow.webContents.send('auto-detect-meeting-start', { appName });
+      } else if (line === 'MEETING_END') {
+        console.log('[AutoDetect] Meeting ended');
+        if (mainWindow) mainWindow.webContents.send('auto-detect-meeting-end');
+      }
+    }
+  });
+
+  meetingDetectorProcess.stderr.on('data', (data) => {
+    console.warn('[AutoDetect]', data.toString().trim());
+  });
+
+  meetingDetectorProcess.on('exit', (code) => {
+    console.log(`[AutoDetect] Detector exited (code ${code})`);
+    meetingDetectorProcess = null;
+    if (autoDetectEnabled) {
+      // Respawn after a short delay if still supposed to be on
+      setTimeout(startMeetingDetector, 3000);
+    }
+  });
+
+  console.log('[AutoDetect] Meeting detector started');
+  updateTrayMenu();
+}
+
+function stopMeetingDetector() {
+  if (meetingDetectorProcess) {
+    meetingDetectorProcess.kill();
+    meetingDetectorProcess = null;
+  }
+  console.log('[AutoDetect] Meeting detector stopped');
+  updateTrayMenu();
+}
+
+function toggleAutoDetect() {
+  autoDetectEnabled = !autoDetectEnabled;
+  if (autoDetectEnabled) {
+    startMeetingDetector();
+  } else {
+    stopMeetingDetector();
+  }
 }
 
 if (!gotSingleInstanceLock) {
@@ -784,6 +873,10 @@ if (!gotSingleInstanceLock) {
 
   app.on('will-quit', async () => {
     globalShortcut.unregisterAll();
+    if (meetingDetectorProcess) {
+      meetingDetectorProcess.kill();
+      meetingDetectorProcess = null;
+    }
     if (tray) {
       tray.destroy();
       tray = null;
@@ -811,7 +904,8 @@ if (!gotSingleInstanceLock) {
   });
 
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') {
+    // Stay alive in tray on macOS and Windows; quit on Linux
+    if (process.platform === 'linux') {
       app.quit();
     }
   });

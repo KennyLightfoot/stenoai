@@ -11,12 +11,15 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Ollama download URL for macOS
+# Ollama download URLs by platform
 OLLAMA_DOWNLOAD_URL = "https://github.com/ollama/ollama/releases/download/v0.16.3/ollama-darwin.tgz"
+
+# Binary name differs by platform
+_OLLAMA_BIN = 'ollama.exe' if sys.platform == 'win32' else 'ollama'
 
 
 def get_bundled_ollama_dir() -> Optional[Path]:
@@ -42,7 +45,7 @@ def get_bundled_ollama_dir() -> Optional[Path]:
 
     # Development mode - check bin directory
     dev_ollama_dir = Path(__file__).parent.parent / 'bin'
-    if dev_ollama_dir.exists() and (dev_ollama_dir / 'ollama').exists():
+    if dev_ollama_dir.exists() and (dev_ollama_dir / _OLLAMA_BIN).exists():
         return dev_ollama_dir
 
     return None
@@ -62,23 +65,35 @@ def get_ollama_binary() -> Optional[Path]:
     # Check bundled first
     bundled_dir = get_bundled_ollama_dir()
     if bundled_dir:
-        ollama_path = bundled_dir / 'ollama'
+        ollama_path = bundled_dir / _OLLAMA_BIN
         if ollama_path.exists():
             logger.info(f"Using bundled Ollama: {ollama_path}")
             return ollama_path
 
     # Fall back to system Ollama
-    system_paths = [
-        '/opt/homebrew/bin/ollama',  # Homebrew on Apple Silicon
-        '/usr/local/bin/ollama',     # Homebrew on Intel
-        '/usr/bin/ollama',           # System installation
-    ]
+    if sys.platform == 'win32':
+        local_app_data = os.environ.get('LOCALAPPDATA', '')
+        program_files = os.environ.get('PROGRAMFILES', 'C:\\Program Files')
+        system_paths: List[str] = [
+            str(Path(local_app_data) / 'Programs' / 'Ollama' / 'ollama.exe'),
+            str(Path(program_files) / 'Ollama' / 'ollama.exe'),
+        ]
+        which_cmd = 'where'
+    else:
+        system_paths = [
+            '/opt/homebrew/bin/ollama',  # Homebrew on Apple Silicon
+            '/usr/local/bin/ollama',     # Homebrew on Intel
+            '/usr/bin/ollama',           # System installation
+        ]
+        which_cmd = 'which'
 
     # Check PATH first
     try:
-        result = subprocess.run(['which', 'ollama'], capture_output=True, text=True, timeout=5)
+        result = subprocess.run([which_cmd, 'ollama'], capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
-            path = Path(result.stdout.strip())
+            # 'where' on Windows may return multiple lines; take first
+            found = result.stdout.strip().splitlines()[0].strip()
+            path = Path(found)
             if path.exists():
                 logger.info(f"Using system Ollama from PATH: {path}")
                 return path
@@ -109,20 +124,20 @@ def get_ollama_env() -> dict:
 
     bundled_dir = get_bundled_ollama_dir()
     if bundled_dir:
-        # Add bundled directory to library path for dylibs
         ollama_dir_str = str(bundled_dir)
 
-        # macOS uses DYLD_LIBRARY_PATH
-        existing = env.get('DYLD_LIBRARY_PATH', '')
-        if existing:
-            env['DYLD_LIBRARY_PATH'] = f"{ollama_dir_str}:{existing}"
+        if sys.platform == 'win32':
+            # Windows uses PATH for DLL lookup
+            existing = env.get('PATH', '')
+            sep = ';'
+            env['PATH'] = f"{ollama_dir_str}{sep}{existing}" if existing else ollama_dir_str
+            logger.debug(f"Prepended bundled dir to PATH for Windows")
         else:
-            env['DYLD_LIBRARY_PATH'] = ollama_dir_str
-
-        # Also set for Metal library
-        env['MLX_METAL_PATH'] = str(bundled_dir / 'mlx.metallib')
-
-        logger.debug(f"Set DYLD_LIBRARY_PATH: {env['DYLD_LIBRARY_PATH']}")
+            # macOS uses DYLD_LIBRARY_PATH
+            existing = env.get('DYLD_LIBRARY_PATH', '')
+            env['DYLD_LIBRARY_PATH'] = f"{ollama_dir_str}:{existing}" if existing else ollama_dir_str
+            env['MLX_METAL_PATH'] = str(bundled_dir / 'mlx.metallib')
+            logger.debug(f"Set DYLD_LIBRARY_PATH: {env['DYLD_LIBRARY_PATH']}")
 
     return env
 
