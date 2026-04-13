@@ -6756,6 +6756,24 @@ Session started - waiting for activity...
             if (!settingsVisible) toggleSettings();
         });
 
+        // Auto-detect meeting listeners — fired by the meeting monitor subprocess
+        ipcRenderer.on('auto-detect-meeting-start', (event, { appName }) => {
+            debugLog(`[AutoDetect] Meeting detected: ${appName} — auto-starting recording`);
+            if (uiState === 'ready') {
+                // Pre-fill session name with the detected app name + timestamp
+                const sessionInput = document.getElementById('session-name');
+                if (sessionInput && !sessionInput.value.trim()) {
+                    const ts = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    sessionInput.value = `${appName} ${ts}`;
+                }
+                startBtn.click();
+            }
+        });
+        ipcRenderer.on('auto-detect-meeting-end', () => {
+            debugLog('[AutoDetect] Meeting ended — auto-stopping recording');
+            if (uiState === 'recording' || uiState === 'paused') stopBtn.click();
+        });
+
         // Setup wizard state
         let currentSetupStep = 1;
         let ollamaInstalled = false;
